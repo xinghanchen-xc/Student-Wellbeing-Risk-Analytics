@@ -1,0 +1,37 @@
+{
+  "accuracy": 0.7941,
+  "balanced_accuracy": 0.7864042944864279,
+  "macro_f1": 0.6177559811686211,
+  "weighted_f1": 0.813816040045621,
+  "log_loss": 0.44470119438614636,
+  "roc_auc_ovr_macro": 0.922124101015558,
+  "roc_auc_ovr_weighted": 0.916219870329585,
+  "rows_used": 50000,
+  "train_rows": 40000,
+  "test_rows": 10000,
+  "class_order": [
+    "Low",
+    "Medium",
+    "High"
+  ],
+  "feature_count_before_encoding": 24,
+  "feature_count_after_encoding": 26,
+  "leakage_columns_excluded": [
+    "burnout_score",
+    "dropout_risk",
+    "is_high_risk",
+    "mental_health_index",
+    "p_high",
+    "p_low",
+    "p_medium",
+    "predicted_risk_code_model",
+    "predicted_risk_index",
+    "predicted_risk_label",
+    "predicted_risk_label_model",
+    "prediction_confidence",
+    "risk_level",
+    "target",
+    "target_risk_code"
+  ],
+  "device_requested": "cpu"
+}

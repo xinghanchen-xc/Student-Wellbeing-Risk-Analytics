@@ -1,0 +1,1 @@
+These are static screenshots of the course project's Power BI dashboard. They are included as visual examples only; an editable `.pbix` file is not included. They may reflect the original course analysis rather than the latest rerun of the modular Python pipeline. Refer to `reports/reference_run/` for the checked reference metrics from the included preview dataset.
