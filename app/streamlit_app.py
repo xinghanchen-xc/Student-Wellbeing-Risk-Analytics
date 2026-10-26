@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import sys
+import os
 
 import joblib
 import numpy as np
@@ -29,46 +31,28 @@ import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
 REPO_DIR = APP_DIR.parent
-DEFAULT_DASHBOARD_FILE = REPO_DIR / "outputs" / "dashboard" / "streamlit_dashboard_sample.csv"
-DEFAULT_GRID_FILE = REPO_DIR / "outputs" / "dashboard" / "tableau_sleep_study_grid.csv"
-DEFAULT_MODEL_FILE = REPO_DIR / "outputs" / "models" / "burnout_risk_model.joblib"
-DEFAULT_METRICS_FILE = REPO_DIR / "outputs" / "reports" / "model_metrics.json"
-DEFAULT_IMPORTANCE_FILE = REPO_DIR / "outputs" / "reports" / "feature_importance.csv"
+if str(REPO_DIR) not in sys.path:
+    sys.path.insert(0, str(REPO_DIR))
 
-RISK_ORDER = ["Low", "Medium", "High"]
-RISK_TO_CODE = {"Low": 0, "Medium": 1, "High": 2}
-CODE_TO_RISK = {v: k for k, v in RISK_TO_CODE.items()}
+from src.features import (  # noqa: E402
+    CATEGORICAL_FEATURES,
+    CODE_TO_RISK,
+    MODEL_FEATURES,
+    NUMERIC_FEATURES,
+    RISK_ORDER,
+    RISK_TO_CODE,
+    add_engineered_features as add_shared_engineered_features,
+)
 
-BASE_FEATURES = [
-    "age",
-    "academic_year",
-    "study_hours_per_day",
-    "exam_pressure",
-    "academic_performance",
-    "stress_level",
-    "anxiety_score",
-    "depression_score",
-    "sleep_hours",
-    "physical_activity",
-    "social_support",
-    "screen_time",
-    "internet_usage",
-    "financial_stress",
-    "family_expectation",
-]
+_output_setting = Path(os.environ.get("WELLBEING_OUTPUT_DIR", "outputs")).expanduser()
+ARTIFACTS_DIR = _output_setting if _output_setting.is_absolute() else (REPO_DIR / _output_setting)
+DEFAULT_DASHBOARD_FILE = ARTIFACTS_DIR / "dashboard" / "streamlit_dashboard_sample.csv"
+DEFAULT_GRID_FILE = ARTIFACTS_DIR / "dashboard" / "tableau_sleep_study_grid.csv"
+DEFAULT_MODEL_FILE = ARTIFACTS_DIR / "models" / "burnout_risk_model.joblib"
+DEFAULT_METRICS_FILE = ARTIFACTS_DIR / "reports" / "model_metrics.json"
+DEFAULT_IMPORTANCE_FILE = ARTIFACTS_DIR / "reports" / "feature_importance.csv"
 
-ENGINEERED_FEATURES = [
-    "academic_resilience",
-    "study_sleep_gap",
-    "socio_economic_multiplier",
-    "effort_reward_index",
-    "total_cognitive_load",
-    "anxiety_pressure_impact",
-    "social_support_ratio",
-    "combined_distress_index",
-]
 
-MODEL_FEATURES = ["gender"] + BASE_FEATURES + ENGINEERED_FEATURES
 
 
 st.set_page_config(
@@ -121,16 +105,9 @@ def load_model_package(path: str):
 
 
 def add_engineered_features(row: Dict) -> Dict:
-    eps = 1e-6
-    row["academic_resilience"] = row["academic_performance"] / (100.0 * (1.0 + row["exam_pressure"] + row["stress_level"] + eps))
-    row["study_sleep_gap"] = row["study_hours_per_day"] - row["sleep_hours"]
-    row["socio_economic_multiplier"] = row["financial_stress"] * row["family_expectation"]
-    row["effort_reward_index"] = row["study_hours_per_day"] / (1.0 + row["academic_performance"] + eps)
-    row["total_cognitive_load"] = row["study_hours_per_day"] + row["screen_time"]
-    row["anxiety_pressure_impact"] = row["anxiety_score"] * row["exam_pressure"]
-    row["social_support_ratio"] = row["social_support"] / (1.0 + row["family_expectation"] + eps)
-    row["combined_distress_index"] = row["anxiety_score"] + row["depression_score"]
-    return row
+    """Use the exact same feature formulas as the training scripts."""
+    engineered = add_shared_engineered_features(pd.DataFrame([row]))
+    return engineered.iloc[0].to_dict()
 
 
 def apply_sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
@@ -282,7 +259,8 @@ def render_predictive_insights(df: pd.DataFrame, importance: pd.DataFrame, metri
 
     errors = df[df["prediction_correct"] == 0] if "prediction_correct" in df.columns else pd.DataFrame()
     if not errors.empty:
-        st.markdown("#### Error analysis")
+        st.markdown("#### Illustrative scored-data errors")
+        st.caption("These examples are scored across the full dataset, including training rows. Use the holdout classification report above for independent model evaluation.")
         err = errors["error_type"].value_counts().reset_index()
         err.columns = ["error_type", "students"]
         fig = px.bar(err, x="error_type", y="students", title="Most common misclassification paths")
@@ -309,7 +287,7 @@ def get_local_explanation(model_package, X_one: pd.DataFrame, pred_label: str, i
         preprocessor = pipeline.named_steps["preprocessor"]
         model = pipeline.named_steps["model"]
         X_trans = preprocessor.transform(X_one)
-        feature_names = [name.replace("cat__", "").replace("num__", "") for name in preprocessor.get_feature_names_out()]
+        feature_names = [name.replace("cat__", "").replace("num__", "").replace("encoder__", "").replace("imputer__", "") for name in preprocessor.get_feature_names_out()]
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(X_trans)
         arr = np.asarray(shap_values)

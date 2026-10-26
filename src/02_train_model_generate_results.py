@@ -58,6 +58,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, label_binarize
+from sklearn.impute import SimpleImputer
 from sklearn.utils.class_weight import compute_sample_weight
 
 try:
@@ -72,60 +73,48 @@ except Exception:  # pragma: no cover
     px = None
     go = None
 
-RANDOM_STATE = 42
-RISK_ORDER = ["Low", "Medium", "High"]
-RISK_TO_CODE = {"Low": 0, "Medium": 1, "High": 2}
-CODE_TO_RISK = {v: k for k, v in RISK_TO_CODE.items()}
+try:
+    from .features import (
+        CATEGORICAL_FEATURES,
+        CODE_TO_RISK,
+        ENGINEERED_FEATURES,
+        LEAKAGE_COLUMNS,
+        MODEL_FEATURES,
+        NUMERIC_FEATURES,
+        RANDOM_STATE,
+        RISK_ORDER,
+        RISK_TO_CODE,
+        TARGET_CODE_COLUMN,
+        TARGET_COLUMN,
+    )
+except ImportError:  # running as `python src/02_train_model_generate_results.py`
+    from features import (
+        CATEGORICAL_FEATURES,
+        CODE_TO_RISK,
+        ENGINEERED_FEATURES,
+        LEAKAGE_COLUMNS,
+        MODEL_FEATURES,
+        NUMERIC_FEATURES,
+        RANDOM_STATE,
+        RISK_ORDER,
+        RISK_TO_CODE,
+        TARGET_CODE_COLUMN,
+        TARGET_COLUMN,
+    )
 
-BASE_FEATURES = [
-    "age",
-    "academic_year",
-    "study_hours_per_day",
-    "exam_pressure",
-    "academic_performance",
-    "stress_level",
-    "anxiety_score",
-    "depression_score",
-    "sleep_hours",
-    "physical_activity",
-    "social_support",
-    "screen_time",
-    "internet_usage",
-    "financial_stress",
-    "family_expectation",
-]
-
-ENGINEERED_FEATURES = [
-    "academic_resilience",
-    "study_sleep_gap",
-    "socio_economic_multiplier",
-    "effort_reward_index",
-    "total_cognitive_load",
-    "anxiety_pressure_impact",
-    "social_support_ratio",
-    "combined_distress_index",
-]
-
-CATEGORICAL_FEATURES = ["gender"]
-NUMERIC_FEATURES = BASE_FEATURES + ENGINEERED_FEATURES
-MODEL_FEATURES = CATEGORICAL_FEATURES + NUMERIC_FEATURES
-
-LEAKAGE_COLUMNS = {
-    "burnout_score",
-    "mental_health_index",
-    "risk_level",
-    "target",
-    "target_risk_code",
-    "is_high_risk",
-    "dropout_risk",
-    "predicted_risk_index",
-    "predicted_risk_label",
-    "predicted_risk_label_model",
-    "predicted_risk_code_model",
-    "p_low",
-    "p_medium",
-    "p_high",
-    "prediction_confidence",
+MODEL_CONFIG = {
+    "n_estimators": 200,
+    "max_depth": 6,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "max_bin": 256,
+    "objective": "multi:softprob",
+    "num_class": 3,
+    "eval_metric": "mlogloss",
+    "tree_method": "hist",
+    "random_state": RANDOM_STATE,
+    "n_jobs": 4,
 }
 
 
@@ -143,32 +132,22 @@ def validate_columns(df: pd.DataFrame) -> None:
 
 
 def build_pipeline(device: str = "cpu") -> Pipeline:
-    encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    categorical_pipeline = Pipeline(
+        steps=[("imputer", SimpleImputer(strategy="most_frequent")),
+               ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]
+    )
+    numeric_pipeline = Pipeline(
+        steps=[("imputer", SimpleImputer(strategy="median"))]
+    )
     preprocessor = ColumnTransformer(
         transformers=[
-            ("cat", encoder, CATEGORICAL_FEATURES),
-            ("num", "passthrough", NUMERIC_FEATURES),
+            ("cat", categorical_pipeline, CATEGORICAL_FEATURES),
+            ("num", numeric_pipeline, NUMERIC_FEATURES),
         ],
         remainder="drop",
         verbose_feature_names_out=True,
     )
-
-    # XGBoost 2+ uses tree_method='hist' and device='cuda' for GPU when available.
-    model = XGBClassifier(
-        n_estimators=80,
-        max_depth=3,
-        learning_rate=0.075,
-        subsample=0.85,
-        colsample_bytree=0.85,
-        max_bin=128,
-        objective="multi:softprob",
-        num_class=3,
-        eval_metric="mlogloss",
-        tree_method="hist",
-        device=device,
-        random_state=RANDOM_STATE,
-        n_jobs=4,
-    )
+    model = XGBClassifier(**MODEL_CONFIG, device=device)
     return Pipeline(steps=[("preprocessor", preprocessor), ("model", model)])
 
 
@@ -176,7 +155,7 @@ def get_feature_names(pipeline: Pipeline) -> List[str]:
     names = pipeline.named_steps["preprocessor"].get_feature_names_out()
     cleaned = []
     for name in names:
-        cleaned.append(name.replace("cat__", "").replace("num__", ""))
+        cleaned.append(name.replace("cat__", "").replace("num__", "").replace("encoder__", "").replace("imputer__", ""))
     return cleaned
 
 
@@ -325,6 +304,7 @@ def write_dashboard_outputs(df: pd.DataFrame, y_proba_full: np.ndarray, y_pred_f
     dashboard["prediction_confidence"] = y_proba_full.max(axis=1)
     dashboard["prediction_correct"] = (dashboard["target_risk_code"].values == y_pred_full).astype("int8")
     dashboard["error_type"] = np.where(dashboard["prediction_correct"] == 1, "Correct", dashboard["risk_level"] + " -> " + dashboard["predicted_risk_label_model"])
+    dashboard["prediction_scope"] = "full_scored_dataset_includes_training_rows"
 
     if write_full:
         full_path = dirs["dashboard"] / "dashboard_predictions_full.csv.gz"
@@ -346,7 +326,6 @@ def write_dashboard_outputs(df: pd.DataFrame, y_proba_full: np.ndarray, y_pred_f
                 "avg_study_hours",
                 "avg_stress_level",
                 "avg_exam_pressure",
-                "model_accuracy_on_full_scored_data",
             ],
             "value": [
                 len(dashboard),
@@ -357,7 +336,6 @@ def write_dashboard_outputs(df: pd.DataFrame, y_proba_full: np.ndarray, y_pred_f
                 dashboard["study_hours_per_day"].mean(),
                 dashboard["stress_level"].mean(),
                 dashboard["exam_pressure"].mean(),
-                dashboard["prediction_correct"].mean(),
             ],
         }
     )
@@ -366,41 +344,38 @@ def write_dashboard_outputs(df: pd.DataFrame, y_proba_full: np.ndarray, y_pred_f
     segment_cols = ["gender", "academic_year", "sleep_band", "study_band", "stress_band", "behavior_quadrant"]
     segment_rows = []
     for col in segment_cols:
-        g = (
-            dashboard.groupby(col, observed=False)
-            .agg(
-                students=("student_id", "count"),
-                actual_high_risk_rate=("is_high_risk", "mean"),
-                predicted_high_risk_rate=("p_high", "mean"),
-                avg_burnout=("burnout_score", "mean") if "burnout_score" in dashboard.columns else ("student_id", "count"),
-                avg_mental_health=("mental_health_index", "mean") if "mental_health_index" in dashboard.columns else ("student_id", "count"),
-                avg_sleep=("sleep_hours", "mean"),
-                avg_study=("study_hours_per_day", "mean"),
-                avg_stress=("stress_level", "mean"),
-            )
-            .reset_index()
-            .rename(columns={col: "segment_value"})
-        )
+        agg = {
+            "students": ("student_id", "count"),
+            "actual_high_risk_rate": ("is_high_risk", "mean"),
+            "predicted_high_risk_rate": ("p_high", "mean"),
+            "avg_sleep": ("sleep_hours", "mean"),
+            "avg_study": ("study_hours_per_day", "mean"),
+            "avg_stress": ("stress_level", "mean"),
+        }
+        if "burnout_score" in dashboard.columns:
+            agg["avg_burnout"] = ("burnout_score", "mean")
+        if "mental_health_index" in dashboard.columns:
+            agg["avg_mental_health"] = ("mental_health_index", "mean")
+        g = dashboard.groupby(col, observed=False).agg(**agg).reset_index().rename(columns={col: "segment_value"})
         g.insert(0, "segment_name", col)
         segment_rows.append(g)
     pd.concat(segment_rows, ignore_index=True).to_csv(dirs["dashboard"] / "powerbi_risk_by_segment.csv", index=False)
 
-    tableau_grid = (
-        dashboard.groupby(["sleep_band", "study_band", "behavior_quadrant"], observed=False)
-        .agg(
-            students=("student_id", "count"),
-            actual_high_risk_rate=("is_high_risk", "mean"),
-            avg_predicted_high_probability=("p_high", "mean"),
-            avg_burnout_score=("burnout_score", "mean") if "burnout_score" in dashboard.columns else ("student_id", "count"),
-            avg_mental_health_index=("mental_health_index", "mean") if "mental_health_index" in dashboard.columns else ("student_id", "count"),
-            avg_sleep_hours=("sleep_hours", "mean"),
-            avg_study_hours=("study_hours_per_day", "mean"),
-            avg_stress_level=("stress_level", "mean"),
-            avg_exam_pressure=("exam_pressure", "mean"),
-            avg_social_support=("social_support", "mean"),
-        )
-        .reset_index()
-    )
+    grid_agg = {
+        "students": ("student_id", "count"),
+        "actual_high_risk_rate": ("is_high_risk", "mean"),
+        "avg_predicted_high_probability": ("p_high", "mean"),
+        "avg_sleep_hours": ("sleep_hours", "mean"),
+        "avg_study_hours": ("study_hours_per_day", "mean"),
+        "avg_stress_level": ("stress_level", "mean"),
+        "avg_exam_pressure": ("exam_pressure", "mean"),
+        "avg_social_support": ("social_support", "mean"),
+    }
+    if "burnout_score" in dashboard.columns:
+        grid_agg["avg_burnout_score"] = ("burnout_score", "mean")
+    if "mental_health_index" in dashboard.columns:
+        grid_agg["avg_mental_health_index"] = ("mental_health_index", "mean")
+    tableau_grid = dashboard.groupby(["sleep_band", "study_band", "behavior_quadrant"], observed=False).agg(**grid_agg).reset_index()
     tableau_grid.to_csv(dirs["dashboard"] / "tableau_sleep_study_grid.csv", index=False)
 
     scatter_cols = [
@@ -460,12 +435,12 @@ def write_plotly_figures(dirs: Dict[str, Path], feature_importance: pd.DataFrame
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train burnout-risk model and generate BI/Tableau/Streamlit outputs.")
-    parser.add_argument("--cleaned", required=True, help="Path to student_burnout_cleaned.csv.gz from 01_clean_data.py.")
+    parser.add_argument("--cleaned", required=True, help="Path to student_burnout_cleaned.csv.gz from src/01_clean_data.py.")
     parser.add_argument("--out-dir", default="outputs", help="Root output directory.")
     parser.add_argument("--max-rows", type=int, default=0, help="Optional row limit for model training and scoring. 0 means all rows.")
     parser.add_argument("--test-size", type=float, default=0.2, help="Test fraction for model evaluation.")
     parser.add_argument("--dashboard-sample-size", type=int, default=100000, help="Rows to export as uncompressed dashboard sample.")
-    parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu", help="Use cuda only in a GPU environment such as Colab with RAPIDS/XGBoost GPU.")
+    parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu", help="Use cuda only when XGBoost reports CUDA support; failures stop the run rather than silently falling back to CPU.")
     parser.add_argument("--shap-sample-size", type=int, default=300, help="Rows for SHAP explainability. Use 0 to skip SHAP for speed.")
     parser.add_argument("--write-full-dashboard", action="store_true", help="Also write dashboard_predictions_full.csv.gz. This can be slow for 1M rows.")
     args = parser.parse_args()
@@ -476,7 +451,7 @@ def main() -> None:
     validate_columns(df)
 
     # Ensure target is numeric and has the expected order.
-    y = pd.to_numeric(df["target_risk_code"], errors="coerce").astype(int)
+    y = pd.to_numeric(df[TARGET_CODE_COLUMN], errors="coerce").astype(int)
     X = df[MODEL_FEATURES].copy()
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -490,15 +465,17 @@ def main() -> None:
     sample_weight = compute_sample_weight(class_weight="balanced", y=y_train)
     pipeline = build_pipeline(device=args.device)
 
-    try:
-        pipeline.fit(X_train, y_train, model__sample_weight=sample_weight)
-    except Exception as exc:
-        if args.device == "cuda":
-            warnings.warn(f"CUDA training failed; retrying on CPU. Error: {exc}")
-            pipeline = build_pipeline(device="cpu")
-            pipeline.fit(X_train, y_train, model__sample_weight=sample_weight)
-        else:
-            raise
+    # Do not silently fall back from GPU to CPU: the requested device must be the
+    # actual training device recorded in the experiment report.
+    pipeline.fit(X_train, y_train, model__sample_weight=sample_weight)
+    training_device = args.device
+
+    # The sklearn preprocessor produces NumPy arrays on CPU. Switch XGBoost's
+    # inference device explicitly to CPU after GPU training to avoid implicit
+    # device-mismatch warnings. The trained trees and fitted parameters remain unchanged.
+    inference_device = "cpu"
+    if args.device == "cuda":
+        pipeline.named_steps["model"].set_params(device="cpu")
 
     y_proba = pipeline.predict_proba(X_test)
     y_pred = np.argmax(y_proba, axis=1)
@@ -508,10 +485,19 @@ def main() -> None:
         "train_rows": int(len(X_train)),
         "test_rows": int(len(X_test)),
         "class_order": RISK_ORDER,
+        "target_column": TARGET_COLUMN,
         "feature_count_before_encoding": len(MODEL_FEATURES),
         "feature_count_after_encoding": len(get_feature_names(pipeline)),
+        "model_features": MODEL_FEATURES,
         "leakage_columns_excluded": sorted(list(LEAKAGE_COLUMNS)),
         "device_requested": args.device,
+        "training_device": training_device,
+        "inference_device": inference_device,
+        "random_state": RANDOM_STATE,
+        "test_size": float(args.test_size),
+        "stratified_split": True,
+        "class_weighting": "balanced sample weights computed from training split",
+        "model_config": MODEL_CONFIG,
     })
 
     write_json(dirs["reports"] / "model_metrics.json", metrics)
@@ -532,6 +518,9 @@ def main() -> None:
         "class_order": RISK_ORDER,
         "risk_to_code": RISK_TO_CODE,
         "code_to_risk": CODE_TO_RISK,
+        "training_device": training_device,
+        "inference_device": inference_device,
+        "model_config": MODEL_CONFIG,
         "metrics": metrics,
     }
     joblib.dump(model_package, dirs["models"] / "burnout_risk_model.joblib")

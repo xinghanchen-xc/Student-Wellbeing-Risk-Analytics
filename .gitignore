@@ -5,14 +5,20 @@ __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 .DS_Store
+.pytest_cache/
 
-# Generated pipeline outputs (recreated by the scripts)
+# Generated training outputs and local model artifacts
 outputs/
+*.joblib
+*.pkl
 
-# Intermediate/large data products
+# Large source and intermediate datasets (keep only the documented sample)
 *.parquet
 *.csv.gz
-
-# Ignore additional raw data by default, but keep the documented preview dataset
 /data/*
-!/data/Burnout_Predictions_Preview_50k.csv
+!/data/sample_50k.csv
+!/data/README.md
+
+# Local environment / credentials
+.env
+.kaggle/
